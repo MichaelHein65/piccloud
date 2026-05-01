@@ -1,0 +1,11 @@
+.DS_Store
+*/.DS_Store
+
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+__pycache__/
+*.pyc
+
+.piccloud-thumbs/
