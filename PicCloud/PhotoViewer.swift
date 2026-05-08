@@ -22,7 +22,7 @@ struct PhotoViewer: View {
 
             TabView(selection: $selectedIndex) {
                 ForEach(Array(album.photos.enumerated()), id: \.element.id) { index, photo in
-                    ZoomableImage(url: photo.viewerURL)
+                    ZoomableImage(photo: photo)
                         .tag(index)
                 }
             }
@@ -193,21 +193,32 @@ private final class ShareFileLoader {
 }
 
 private struct ZoomableImage: View {
-    let url: URL
+    let photo: GalleryPhoto
 
     var body: some View {
-        ZoomableImageView(url: url)
-            .ignoresSafeArea()
+        GeometryReader { proxy in
+            let pixelSize = photo.viewerPixelSize(for: proxy.size)
+
+            ZoomableImageView(url: photo.viewerURL(size: pixelSize), maxImagePixelSize: CGFloat(pixelSize))
+                .ignoresSafeArea()
+        }
     }
 }
 
 private extension GalleryPhoto {
-    var viewerURL: URL {
-        sizedThumbnailURL(size: 4096) ?? url
+    func viewerURL(size: Int) -> URL {
+        sizedThumbnailURL(size: size) ?? url
     }
 
     var shareURL: URL {
         sizedThumbnailURL(size: 4096) ?? url
+    }
+
+    func viewerPixelSize(for viewport: CGSize) -> Int {
+        let screenScale = UIScreen.main.scale
+        let longestVisibleEdge = max(viewport.width, viewport.height)
+        let requestedPixels = Int((longestVisibleEdge * screenScale).rounded(.up))
+        return min(4096, max(1600, requestedPixels))
     }
 
     private func sizedThumbnailURL(size: Int) -> URL? {
@@ -229,10 +240,13 @@ private extension GalleryPhoto {
 
 private struct ZoomableImageView: UIViewRepresentable {
     let url: URL
-    private let maxImagePixelSize: CGFloat = 4096
+    let maxImagePixelSize: CGFloat
 
     func makeUIView(context: Context) -> UIScrollView {
-        let scrollView = UIScrollView()
+        let scrollView = LayoutAwareScrollView()
+        scrollView.onBoundsChanged = { [weak coordinator = context.coordinator] in
+            coordinator?.configureLayout(resetZoom: true)
+        }
         scrollView.backgroundColor = .black
         scrollView.delegate = context.coordinator
         scrollView.minimumZoomScale = 1
@@ -258,7 +272,7 @@ private struct ZoomableImageView: UIViewRepresentable {
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
         context.coordinator.scrollView = scrollView
         context.coordinator.load(url: url, maxPixelSize: maxImagePixelSize)
-        context.coordinator.configureLayout()
+        context.coordinator.configureLayout(resetZoom: false)
     }
 
     func makeCoordinator() -> Coordinator {
@@ -298,7 +312,7 @@ private struct ZoomableImageView: UIViewRepresentable {
             }.resume()
         }
 
-        func configureLayout() {
+        func configureLayout(resetZoom: Bool = false) {
             guard let scrollView, imageSize.width > 0, imageSize.height > 0 else { return }
 
             let bounds = scrollView.bounds.size
@@ -312,7 +326,10 @@ private struct ZoomableImageView: UIViewRepresentable {
             scrollView.minimumZoomScale = 1
             scrollView.maximumZoomScale = max(1, 1 / fitScale)
 
-            if scrollView.zoomScale < scrollView.minimumZoomScale || scrollView.zoomScale > scrollView.maximumZoomScale {
+            if resetZoom {
+                scrollView.zoomScale = scrollView.minimumZoomScale
+                scrollView.contentOffset = .zero
+            } else if scrollView.zoomScale < scrollView.minimumZoomScale || scrollView.zoomScale > scrollView.maximumZoomScale {
                 scrollView.zoomScale = scrollView.minimumZoomScale
             }
             centerImage()
@@ -364,5 +381,19 @@ private struct ZoomableImageView: UIViewRepresentable {
             scrollView.contentInset = .zero
         }
 
+    }
+}
+
+private final class LayoutAwareScrollView: UIScrollView {
+    var onBoundsChanged: (() -> Void)?
+    private var lastBoundsSize = CGSize.zero
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+
+        let currentSize = bounds.size
+        guard currentSize != lastBoundsSize else { return }
+        lastBoundsSize = currentSize
+        onBoundsChanged?()
     }
 }
