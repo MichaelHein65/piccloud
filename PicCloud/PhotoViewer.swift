@@ -9,6 +9,7 @@ struct PhotoViewer: View {
     @State private var selectedIndex: Int
     @State private var shareItem: ShareItem?
     @State private var isPreparingShare = false
+    @State private var isChromeHidden = false
 
     init(album: GalleryAlbum, initialPhoto: GalleryPhoto) {
         self.album = album
@@ -17,18 +18,39 @@ struct PhotoViewer: View {
     }
 
     var body: some View {
-        ZStack(alignment: .top) {
-            Color.black.ignoresSafeArea()
+        GeometryReader { proxy in
+            let isLandscape = proxy.size.width > proxy.size.height
 
-            TabView(selection: $selectedIndex) {
-                ForEach(Array(album.photos.enumerated()), id: \.element.id) { index, photo in
-                    ZoomableImage(photo: photo)
+            ZStack(alignment: .top) {
+                Color.black.ignoresSafeArea()
+
+                TabView(selection: $selectedIndex) {
+                    ForEach(Array(album.photos.enumerated()), id: \.element.id) { index, photo in
+                        ZoomableImage(photo: photo) {
+                            withAnimation(.easeInOut(duration: 0.18)) {
+                                isChromeHidden.toggle()
+                            }
+                        }
                         .tag(index)
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: isChromeHidden ? .never : .automatic))
+
+                if !isChromeHidden {
+                    topBar(isLandscape: isLandscape)
+                        .transition(.opacity)
                 }
             }
-            .tabViewStyle(.page(indexDisplayMode: .automatic))
+        }
+        .sheet(item: $shareItem) { item in
+            ShareSheet(items: [item.fileURL], applicationActivities: [SaveToPhotosActivity()])
+                .ignoresSafeArea()
+        }
+    }
 
-            HStack(spacing: 12) {
+    private func topBar(isLandscape: Bool) -> some View {
+        HStack(spacing: 12) {
+            if !isLandscape {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(album.photos[selectedIndex].name)
                         .font(.subheadline.weight(.semibold))
@@ -37,42 +59,44 @@ struct PhotoViewer: View {
                         .font(.caption)
                         .foregroundStyle(.white.opacity(0.7))
                 }
-                Spacer()
-                Button {
-                    prepareShare(for: album.photos[selectedIndex])
-                } label: {
-                    if isPreparingShare {
-                        ProgressView()
-                            .tint(.white)
-                            .frame(width: 40, height: 40)
-                    } else {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.headline)
-                            .foregroundStyle(.white)
-                            .frame(width: 40, height: 40)
-                            .background(.white.opacity(0.16), in: Circle())
-                    }
-                }
-                .disabled(isPreparingShare)
+            }
 
-                Button {
-                    dismiss()
-                } label: {
-                    Image(systemName: "xmark")
+            Spacer()
+
+            Button {
+                prepareShare(for: album.photos[selectedIndex])
+            } label: {
+                if isPreparingShare {
+                    ProgressView()
+                        .tint(.white)
+                        .frame(width: 40, height: 40)
+                } else {
+                    Image(systemName: "square.and.arrow.up")
                         .font(.headline)
                         .foregroundStyle(.white)
                         .frame(width: 40, height: 40)
                         .background(.white.opacity(0.16), in: Circle())
                 }
             }
-            .foregroundStyle(.white)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            .background(.black.opacity(0.42))
+            .disabled(isPreparingShare)
+
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .frame(width: 40, height: 40)
+                    .background(.white.opacity(0.16), in: Circle())
+            }
         }
-        .sheet(item: $shareItem) { item in
-            ShareSheet(items: [item.fileURL], applicationActivities: [SaveToPhotosActivity()])
-                .ignoresSafeArea()
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+        .background {
+            if !isLandscape {
+                Color.black.opacity(0.42)
+            }
         }
     }
 
@@ -194,12 +218,17 @@ private final class ShareFileLoader {
 
 private struct ZoomableImage: View {
     let photo: GalleryPhoto
+    let onDoubleTap: () -> Void
 
     var body: some View {
         GeometryReader { proxy in
             let pixelSize = photo.viewerPixelSize(for: proxy.size)
 
-            ZoomableImageView(url: photo.viewerURL(size: pixelSize), maxImagePixelSize: CGFloat(pixelSize))
+            ZoomableImageView(
+                url: photo.viewerURL(size: pixelSize),
+                maxImagePixelSize: CGFloat(pixelSize),
+                onDoubleTap: onDoubleTap
+            )
                 .ignoresSafeArea()
         }
     }
@@ -241,6 +270,7 @@ private extension GalleryPhoto {
 private struct ZoomableImageView: UIViewRepresentable {
     let url: URL
     let maxImagePixelSize: CGFloat
+    let onDoubleTap: () -> Void
 
     func makeUIView(context: Context) -> UIScrollView {
         let scrollView = LayoutAwareScrollView()
@@ -264,13 +294,21 @@ private struct ZoomableImageView: UIViewRepresentable {
         tapRecognizer.delegate = context.coordinator
         scrollView.addGestureRecognizer(tapRecognizer)
 
+        let doubleTapRecognizer = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.handleDoubleTap))
+        doubleTapRecognizer.numberOfTapsRequired = 2
+        doubleTapRecognizer.delegate = context.coordinator
+        tapRecognizer.require(toFail: doubleTapRecognizer)
+        scrollView.addGestureRecognizer(doubleTapRecognizer)
+
         context.coordinator.scrollView = scrollView
+        context.coordinator.onDoubleTap = onDoubleTap
         context.coordinator.load(url: url, maxPixelSize: maxImagePixelSize)
         return scrollView
     }
 
     func updateUIView(_ scrollView: UIScrollView, context: Context) {
         context.coordinator.scrollView = scrollView
+        context.coordinator.onDoubleTap = onDoubleTap
         context.coordinator.load(url: url, maxPixelSize: maxImagePixelSize)
         context.coordinator.configureLayout(resetZoom: false)
     }
@@ -282,6 +320,7 @@ private struct ZoomableImageView: UIViewRepresentable {
     final class Coordinator: NSObject, UIScrollViewDelegate, UIGestureRecognizerDelegate {
         let imageView = UIImageView()
         weak var scrollView: UIScrollView?
+        var onDoubleTap: (() -> Void)?
 
         private var currentURL: URL?
         private var imageSize = CGSize.zero
@@ -350,6 +389,10 @@ private struct ZoomableImageView: UIViewRepresentable {
                 scrollView.contentOffset = .zero
                 self.centerImage()
             }
+        }
+
+        @objc func handleDoubleTap() {
+            onDoubleTap?()
         }
 
         func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer) -> Bool {

@@ -10,7 +10,9 @@ full-screen viewer.
 ## iOS app features
 
 - Year, album, and photo-grid views with square thumbnails.
-- Full-screen photo viewer with pinch zoom, one-finger panning, and tap-to-reset.
+- Face ID / device passcode lock before opening the app and after returning from pause/background.
+- Full-screen photo viewer with pinch zoom, one-finger panning, tap-to-reset, and double-tap to
+  hide or show viewer controls for an image-only view.
 - Memory-aware full-screen loading: the viewer requests a server-side image variant sized for the
   current portrait or landscape viewport instead of decoding ultra-large originals on the phone.
 - Persistent iPhone cache using `URLCache`: JSON manifests, thumbnails, and viewed images can be
@@ -79,6 +81,16 @@ Open any photo full screen and tap the share icon. iOS will show available targe
 Messages, WhatsApp, Notes, and other installed extensions. PicCloud also adds an explicit
 `In Bilder sichern` action, which saves the image into the iPhone Photos library after iOS grants
 add-only Photos permission.
+
+## App lock and viewer controls
+
+PicCloud requires device-owner authentication before showing the gallery. On Face ID devices this
+uses Face ID, with the device passcode available as the iOS fallback. The app locks again when it
+becomes inactive or enters the background.
+
+In the full-screen viewer, a single tap resets zoom and position. A double tap toggles the viewer
+chrome so only the image remains visible; another double tap brings the controls back. In landscape
+orientation the filename is hidden to avoid covering the photo.
 
 ## Development checks
 

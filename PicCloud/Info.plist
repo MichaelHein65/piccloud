@@ -34,6 +34,8 @@
 	</dict>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>PicCloud kann ausgewaehlte Bilder in deiner Fotos-Mediathek sichern.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>PicCloud nutzt Face ID, um deine private Bildergalerie zu schuetzen.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UISupportedInterfaceOrientations</key>
