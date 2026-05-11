@@ -2,12 +2,16 @@ import SwiftUI
 import ImageIO
 
 enum PicCloudCache {
+    private static let schemaVersion = 2
+    private static let schemaVersionKey = "PicCloud.cacheSchemaVersion"
+
     static func configure() {
         URLCache.shared = URLCache(
             memoryCapacity: 32 * 1024 * 1024,
             diskCapacity: 4 * 1024 * 1024 * 1024,
             directory: cacheDirectory
         )
+        invalidateIfSchemaChanged()
     }
 
     static func cachedRequest(for url: URL, timeout: TimeInterval = 20) -> URLRequest {
@@ -28,6 +32,13 @@ enum PicCloudCache {
 
     static func invalidateAll() {
         URLCache.shared.removeAllCachedResponses()
+    }
+
+    private static func invalidateIfSchemaChanged() {
+        let defaults = UserDefaults.standard
+        guard defaults.integer(forKey: schemaVersionKey) != schemaVersion else { return }
+        invalidateAll()
+        defaults.set(schemaVersion, forKey: schemaVersionKey)
     }
 
     private static var cacheDirectory: URL? {
@@ -68,14 +79,7 @@ struct CachedRemoteImage<Content: View>: View {
         phase = .empty
         let task = Task {
             do {
-                let request = PicCloudCache.cachedRequest(for: url)
-                let (data, response) = try await URLSession.shared.data(for: request)
-                if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
-                    throw URLError(.badServerResponse)
-                }
-                guard let uiImage = PicCloudCache.downsampledImage(from: data, maxPixelSize: 1024) else {
-                    throw URLError(.cannotDecodeContentData)
-                }
+                let uiImage = try await PicCloudCache.loadDownsampledImage(from: url, maxPixelSize: 1024)
                 let image = Image(uiImage: uiImage)
                 await MainActor.run {
                     phase = .success(image)
@@ -92,6 +96,33 @@ struct CachedRemoteImage<Content: View>: View {
 }
 
 extension PicCloudCache {
+    static func loadDownsampledImage(from url: URL, maxPixelSize: CGFloat) async throws -> UIImage {
+        do {
+            return try await loadDownsampledImage(from: url, maxPixelSize: maxPixelSize, cachePolicy: .returnCacheDataElseLoad)
+        } catch {
+            return try await loadDownsampledImage(from: url, maxPixelSize: maxPixelSize, cachePolicy: .reloadIgnoringLocalCacheData)
+        }
+    }
+
+    private static func loadDownsampledImage(
+        from url: URL,
+        maxPixelSize: CGFloat,
+        cachePolicy: URLRequest.CachePolicy
+    ) async throws -> UIImage {
+        var request = URLRequest(url: url, cachePolicy: cachePolicy, timeoutInterval: 20)
+        request.allowsConstrainedNetworkAccess = true
+        request.allowsExpensiveNetworkAccess = true
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
+            throw URLError(.badServerResponse)
+        }
+        guard let image = downsampledImage(from: data, maxPixelSize: maxPixelSize) else {
+            throw URLError(.cannotDecodeContentData)
+        }
+        return image
+    }
+
     static func downsampledImage(from data: Data, maxPixelSize: CGFloat) -> UIImage? {
         let sourceOptions = [
             kCGImageSourceShouldCache: false

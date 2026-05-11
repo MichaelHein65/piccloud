@@ -1,5 +1,11 @@
 import Foundation
 
+struct LibraryVersionResponse: Decodable {
+    let generatedAt: Date
+    let libraryVersion: String
+    let rootName: String
+}
+
 struct GalleryManifest: Decodable {
     let generatedAt: Date
     let libraryVersion: String?

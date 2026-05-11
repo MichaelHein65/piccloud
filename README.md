@@ -33,13 +33,16 @@ Requests use a cache-first policy. If a response was already cached, the app can
 without asking the server. This is intended for travel/mobile use when the phone is no longer on the
 same network.
 
-Folder and album manifests are different: PicCloud checks them against the server when opening the
-app, a year, or an album. The server includes a `libraryVersion` derived from all image paths,
-sizes, and modification times. If that version changes, the iPhone URL cache is invalidated so the
-app mirrors the Pi5 folder state instead of showing stale names or old album contents.
+Folder and album manifests are different: PicCloud checks `/version.json` once per app session
+before opening lists. That response contains a small `libraryVersion` checksum derived from all
+image paths, sizes, and modification times. If the checksum still matches, the app trusts the iPhone
+cache for fast list loading. If it changes, the iPhone URL cache is invalidated so the app mirrors
+the Pi5 folder state instead of showing stale names or old album contents.
 
 Image and thumbnail URLs include a file-version query value. When a photo is renamed, replaced, or
 modified on the Pi5, its URL changes and iOS stores a fresh cached copy under the new key.
+PicCloud also invalidates older cache schemas once after app updates and retries image loads from
+the server if a cached image response cannot be decoded.
 
 The full-screen viewer does not load `/image/...` originals directly. It uses `/thumb/{size}/...`,
 where `{size}` is derived from the current viewport and screen scale. Portrait and landscape can

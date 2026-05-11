@@ -147,6 +147,9 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/version.json":
+            self.write_version()
+            return
         if parsed.path == "/years.json":
             self.write_years()
             return
@@ -181,6 +184,14 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
         self._sent_cache_control = True
         self.end_headers()
         self.wfile.write(data)
+
+    def write_version(self) -> None:
+        payload = {
+            "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "libraryVersion": self.library_version(),
+            "rootName": self.gallery_root.name,
+        }
+        self.write_json(payload)
 
     def write_manifest(self, include_photos: bool) -> None:
         albums = self.build_albums(include_photos=include_photos)

@@ -366,8 +366,7 @@ private struct ZoomableImageView: UIViewRepresentable {
             scrollView.maximumZoomScale = max(1, 1 / fitScale)
 
             if resetZoom {
-                scrollView.zoomScale = scrollView.minimumZoomScale
-                scrollView.contentOffset = .zero
+                resetToCenteredFit(animated: false)
             } else if scrollView.zoomScale < scrollView.minimumZoomScale || scrollView.zoomScale > scrollView.maximumZoomScale {
                 scrollView.zoomScale = scrollView.minimumZoomScale
             }
@@ -385,9 +384,8 @@ private struct ZoomableImageView: UIViewRepresentable {
         @objc func resetZoom() {
             guard let scrollView else { return }
             UIView.animate(withDuration: 0.22, delay: 0, options: [.curveEaseOut]) {
-                scrollView.zoomScale = scrollView.minimumZoomScale
-                scrollView.contentOffset = .zero
-                self.centerImage()
+                self.resetToCenteredFit(animated: false)
+                scrollView.layoutIfNeeded()
             }
         }
 
@@ -410,6 +408,16 @@ private struct ZoomableImageView: UIViewRepresentable {
                 left: horizontalInset,
                 bottom: verticalInset,
                 right: horizontalInset
+            )
+        }
+
+        private func resetToCenteredFit(animated: Bool) {
+            guard let scrollView else { return }
+            scrollView.setZoomScale(scrollView.minimumZoomScale, animated: animated)
+            centerImage()
+            scrollView.contentOffset = CGPoint(
+                x: -scrollView.contentInset.left,
+                y: -scrollView.contentInset.top
             )
         }
 
