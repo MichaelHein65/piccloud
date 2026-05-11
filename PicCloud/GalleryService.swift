@@ -8,6 +8,8 @@ final class GalleryStore: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
 
+    private let libraryVersionKey = "PicCloud.libraryVersion"
+
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -26,12 +28,13 @@ final class GalleryStore: ObservableObject {
         defer { isLoading = false }
 
         do {
-            let request = PicCloudCache.cachedRequest(for: url, timeout: 8)
+            let request = PicCloudCache.serverCheckRequest(for: url, timeout: 8)
             let (data, response) = try await URLSession.shared.data(for: request)
             if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
                 throw URLError(.badServerResponse)
             }
             let manifest = try decoder.decode(YearManifest.self, from: data)
+            invalidateCacheIfNeeded(libraryVersion: manifest.libraryVersion)
             years = manifest.years.filter { $0.albumCount > 0 }
             UserDefaults.standard.set(trimmedURL, forKey: "PicCloud.serverURL")
             serverURL = trimmedURL
@@ -46,12 +49,14 @@ final class GalleryStore: ObservableObject {
               let url = URL(string: "\(trimmedURL)/year/\(encodedYear).json") else {
             throw URLError(.badURL)
         }
-        let request = PicCloudCache.cachedRequest(for: url, timeout: 8)
+        let request = PicCloudCache.serverCheckRequest(for: url, timeout: 8)
         let (data, response) = try await URLSession.shared.data(for: request)
         if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
             throw URLError(.badServerResponse)
         }
-        return try decoder.decode(YearResponse.self, from: data).albums
+        let yearResponse = try decoder.decode(YearResponse.self, from: data)
+        invalidateCacheIfNeeded(libraryVersion: yearResponse.libraryVersion)
+        return yearResponse.albums
     }
 
     func loadAlbum(_ album: GalleryAlbum) async throws -> GalleryAlbum {
@@ -59,11 +64,29 @@ final class GalleryStore: ObservableObject {
         guard let url = URL(string: "\(trimmedURL)/album/\(album.id).json") else {
             throw URLError(.badURL)
         }
-        let request = PicCloudCache.cachedRequest(for: url, timeout: 8)
+        let request = PicCloudCache.serverCheckRequest(for: url, timeout: 8)
         let (data, response) = try await URLSession.shared.data(for: request)
         if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
             throw URLError(.badServerResponse)
         }
-        return try decoder.decode(AlbumResponse.self, from: data).album
+        let albumResponse = try decoder.decode(AlbumResponse.self, from: data)
+        invalidateCacheIfNeeded(libraryVersion: albumResponse.libraryVersion)
+        return albumResponse.album
+    }
+
+    private func invalidateCacheIfNeeded(libraryVersion: String?) {
+        guard let libraryVersion, !libraryVersion.isEmpty else { return }
+
+        let defaults = UserDefaults.standard
+        let previousVersion = defaults.string(forKey: libraryVersionKey)
+        guard previousVersion != nil, previousVersion != libraryVersion else {
+            defaults.set(libraryVersion, forKey: libraryVersionKey)
+            return
+        }
+
+        PicCloudCache.invalidateAll()
+        years = []
+        albums = []
+        defaults.set(libraryVersion, forKey: libraryVersionKey)
     }
 }

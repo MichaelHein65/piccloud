@@ -55,7 +55,7 @@ struct YearView: View {
             AlbumView(album: album, store: store)
         }
         .task {
-            await loadIfNeeded()
+            await loadYear()
         }
     }
 
@@ -94,8 +94,7 @@ struct YearView: View {
         .aspectRatio(1, contentMode: .fit)
     }
 
-    private func loadIfNeeded() async {
-        guard albums.isEmpty else { return }
+    private func loadYear() async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }

@@ -66,9 +66,7 @@ struct GalleryView: View {
                 YearView(year: year, store: store)
             }
             .task {
-                if store.years.isEmpty {
-                    await store.load()
-                }
+                await store.load()
             }
         }
     }

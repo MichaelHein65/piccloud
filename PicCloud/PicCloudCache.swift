@@ -17,6 +17,19 @@ enum PicCloudCache {
         return request
     }
 
+    static func serverCheckRequest(for url: URL, timeout: TimeInterval = 20) -> URLRequest {
+        var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        request.setValue("no-cache", forHTTPHeaderField: "Cache-Control")
+        request.allowsConstrainedNetworkAccess = true
+        request.allowsExpensiveNetworkAccess = true
+        return request
+    }
+
+    static func invalidateAll() {
+        URLCache.shared.removeAllCachedResponses()
+    }
+
     private static var cacheDirectory: URL? {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent(
             "PicCloudURLCache",

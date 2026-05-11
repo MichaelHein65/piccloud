@@ -43,6 +43,16 @@ def stable_id(value: str) -> str:
     return hashlib.sha1(value.encode("utf-8")).hexdigest()[:16]
 
 
+def asset_version(path: pathlib.Path) -> str:
+    stat = path.stat()
+    return f"{stat.st_mtime_ns:x}-{stat.st_size:x}"
+
+
+def url_with_version(url: str, version: str) -> str:
+    separator = "&" if "?" in url else "?"
+    return f"{url}{separator}v={version}"
+
+
 def should_skip_path(root: pathlib.Path, path: pathlib.Path, thumb_root: pathlib.Path) -> bool:
     try:
         path.resolve().relative_to(thumb_root.resolve())
@@ -130,7 +140,9 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
 
     def end_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "public, max-age=300")
+        if not getattr(self, "_sent_cache_control", False):
+            self.send_header("Cache-Control", "public, max-age=300")
+        self._sent_cache_control = False
         super().end_headers()
 
     def do_GET(self) -> None:
@@ -165,6 +177,8 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-cache")
+        self._sent_cache_control = True
         self.end_headers()
         self.wfile.write(data)
 
@@ -172,6 +186,7 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
         albums = self.build_albums(include_photos=include_photos)
         payload = {
             "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "libraryVersion": self.library_version(),
             "rootName": self.gallery_root.name,
             "albums": sorted(albums.values(), key=sort_key_for_album, reverse=True),
         }
@@ -208,6 +223,7 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
         result.sort(key=lambda item: int(item["id"]) if item["id"].isdigit() else 0, reverse=True)
         payload = {
             "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "libraryVersion": self.library_version(),
             "rootName": self.gallery_root.name,
             "years": result,
         }
@@ -222,6 +238,7 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
         albums.sort(key=sort_key_for_album, reverse=True)
         payload = {
             "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+            "libraryVersion": self.library_version(),
             "rootName": self.gallery_root.name,
             "year": {
                 "id": year_id,
@@ -240,6 +257,7 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
             if album["id"] == album_id:
                 payload = {
                     "generatedAt": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
+                    "libraryVersion": self.library_version(),
                     "rootName": self.gallery_root.name,
                     "album": album,
                 }
@@ -279,8 +297,9 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
                 album.setdefault("photos", [])
 
             quoted = urllib.parse.quote(relative)
-            image_url = f"{base_url}/image/{quoted}"
-            thumb_url = f"{base_url}/thumb/{self.thumb_size}/{quoted}"
+            version = asset_version(file_path)
+            image_url = url_with_version(f"{base_url}/image/{quoted}", version)
+            thumb_url = url_with_version(f"{base_url}/thumb/{self.thumb_size}/{quoted}", version)
             photo = {
                 "id": stable_id(relative),
                 "albumId": album_id,
@@ -314,6 +333,27 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
 
         return albums
 
+    def library_version(self) -> str:
+        digest = hashlib.sha1()
+        root = self.gallery_root
+        for file_path in sorted(root.rglob("*")):
+            if should_skip_path(root, file_path, self.thumb_root):
+                continue
+            if not file_path.is_file() or file_path.suffix.lower() not in IMAGE_EXTENSIONS:
+                continue
+            try:
+                stat = file_path.stat()
+                relative = file_path.relative_to(root).as_posix()
+            except OSError:
+                continue
+            digest.update(relative.encode("utf-8", errors="surrogateescape"))
+            digest.update(b"\0")
+            digest.update(str(stat.st_size).encode("ascii"))
+            digest.update(b"\0")
+            digest.update(str(stat.st_mtime_ns).encode("ascii"))
+            digest.update(b"\0")
+        return digest.hexdigest()[:20]
+
     def write_image(self, quoted_relative_path: str) -> None:
         relative = urllib.parse.unquote(quoted_relative_path)
         requested = (self.gallery_root / relative).resolve()
@@ -342,7 +382,7 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
     def write_thumbnail(self, thumb_request: str) -> None:
         try:
             size_text, quoted_relative_path = thumb_request.split("/", 1)
-            size = max(120, min(int(size_text), 1600))
+            size = max(120, min(int(size_text), 4096))
         except ValueError:
             self.send_error(400)
             return

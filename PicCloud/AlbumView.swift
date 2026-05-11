@@ -56,15 +56,14 @@ struct AlbumView: View {
         .navigationTitle(album.title)
         .navigationBarTitleDisplayMode(.inline)
         .task {
-            await loadAlbumIfNeeded()
+            await loadAlbum()
         }
         .fullScreenCover(item: $selectedPhoto) { photo in
             PhotoViewer(album: displayAlbum, initialPhoto: photo)
         }
     }
 
-    private func loadAlbumIfNeeded() async {
-        guard loadedAlbum == nil else { return }
+    private func loadAlbum() async {
         isLoading = true
         errorMessage = nil
         defer { isLoading = false }

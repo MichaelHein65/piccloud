@@ -2,18 +2,21 @@ import Foundation
 
 struct GalleryManifest: Decodable {
     let generatedAt: Date
+    let libraryVersion: String?
     let rootName: String
     let albums: [GalleryAlbum]
 }
 
 struct YearManifest: Decodable {
     let generatedAt: Date
+    let libraryVersion: String?
     let rootName: String
     let years: [GalleryYear]
 }
 
 struct YearResponse: Decodable {
     let generatedAt: Date
+    let libraryVersion: String?
     let rootName: String
     let year: GalleryYear
     let albums: [GalleryAlbum]
@@ -21,6 +24,7 @@ struct YearResponse: Decodable {
 
 struct AlbumResponse: Decodable {
     let generatedAt: Date
+    let libraryVersion: String?
     let rootName: String
     let album: GalleryAlbum
 }
