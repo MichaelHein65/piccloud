@@ -34,6 +34,11 @@ enum PicCloudCache {
         URLCache.shared.removeAllCachedResponses()
     }
 
+    static func prefetch(_ url: URL, timeout: TimeInterval = 60) async {
+        let request = cachedRequest(for: url, timeout: timeout)
+        _ = try? await URLSession.shared.data(for: request)
+    }
+
     private static func invalidateIfSchemaChanged() {
         let defaults = UserDefaults.standard
         guard defaults.integer(forKey: schemaVersionKey) != schemaVersion else { return }

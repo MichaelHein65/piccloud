@@ -10,6 +10,8 @@ full-screen viewer.
 ## iOS app features
 
 - Year, album, and photo-grid views with square thumbnails.
+- Landscape folder browsing keeps tile sizes close to portrait: the current folder cover stays on
+  the left, while child folders or photos can be swiped horizontally on the right.
 - Face ID / device passcode lock before opening the app and after returning from pause/background.
 - Full-screen photo viewer with pinch zoom, one-finger panning, tap-to-reset, and double-tap to
   hide or show viewer controls for an image-only view.
@@ -48,6 +50,10 @@ The full-screen viewer does not load `/image/...` originals directly. It uses `/
 where `{size}` is derived from the current viewport and screen scale. Portrait and landscape can
 therefore use different cached image variants, avoiding stale sizing after rotation while still
 preventing iOS memory termination on very large photos.
+
+When browsing full-screen photos, PicCloud prefetches the previous and next image in the background
+for the current viewer size. This warms the iPhone cache and reduces visible waiting when swiping
+left or right through an album.
 
 ## Start the gallery server on pi5 over Tailscale
 
@@ -100,8 +106,7 @@ uses Face ID, with the device passcode available as the iOS fallback. The app lo
 becomes inactive or enters the background.
 
 In the full-screen viewer, a single tap resets zoom and position. A double tap toggles the viewer
-chrome so only the image remains visible; another double tap brings the controls back. In landscape
-orientation the filename is hidden to avoid covering the photo.
+chrome so only the image remains visible; another double tap brings the controls back.
 
 ## Development checks
 

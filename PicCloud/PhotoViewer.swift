@@ -20,6 +20,7 @@ struct PhotoViewer: View {
     var body: some View {
         GeometryReader { proxy in
             let isLandscape = proxy.size.width > proxy.size.height
+            let prefetchPixelSize = viewerPixelSize(for: proxy.size)
 
             ZStack(alignment: .top) {
                 Color.black.ignoresSafeArea()
@@ -41,6 +42,9 @@ struct PhotoViewer: View {
                         .transition(.opacity)
                 }
             }
+            .task(id: "\(selectedIndex)-\(prefetchPixelSize)") {
+                await prefetchAdjacentPhotos(pixelSize: prefetchPixelSize)
+            }
         }
         .sheet(item: $shareItem) { item in
             ShareSheet(items: [item.fileURL], applicationActivities: [SaveToPhotosActivity()])
@@ -50,15 +54,13 @@ struct PhotoViewer: View {
 
     private func topBar(isLandscape: Bool) -> some View {
         HStack(spacing: 12) {
-            if !isLandscape {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(album.photos[selectedIndex].name)
-                        .font(.subheadline.weight(.semibold))
-                        .lineLimit(1)
-                    Text("\(selectedIndex + 1) von \(album.photos.count)")
-                        .font(.caption)
-                        .foregroundStyle(.white.opacity(0.7))
-                }
+            VStack(alignment: .leading, spacing: 2) {
+                Text(album.photos[selectedIndex].name)
+                    .font(.subheadline.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(selectedIndex + 1) von \(album.photos.count)")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.7))
             }
 
             Spacer()
@@ -93,11 +95,7 @@ struct PhotoViewer: View {
         .foregroundStyle(.white)
         .padding(.horizontal, 16)
         .padding(.vertical, 12)
-        .background {
-            if !isLandscape {
-                Color.black.opacity(0.42)
-            }
-        }
+        .background(Color.black.opacity(isLandscape ? 0.34 : 0.42))
     }
 
     private func prepareShare(for photo: GalleryPhoto) {
@@ -112,6 +110,27 @@ struct PhotoViewer: View {
             } catch {
                 await MainActor.run {
                     isPreparingShare = false
+                }
+            }
+        }
+    }
+
+    private func viewerPixelSize(for viewport: CGSize) -> Int {
+        let screenScale = UIScreen.main.scale
+        let longestVisibleEdge = max(viewport.width, viewport.height)
+        let requestedPixels = Int((longestVisibleEdge * screenScale).rounded(.up))
+        return min(4096, max(1600, requestedPixels))
+    }
+
+    private func prefetchAdjacentPhotos(pixelSize: Int) async {
+        let neighborIndices = [selectedIndex - 1, selectedIndex + 1]
+            .filter { album.photos.indices.contains($0) }
+
+        await withTaskGroup(of: Void.self) { group in
+            for index in neighborIndices {
+                let url = album.photos[index].viewerURL(size: pixelSize)
+                group.addTask {
+                    await PicCloudCache.prefetch(url)
                 }
             }
         }

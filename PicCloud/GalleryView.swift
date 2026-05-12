@@ -11,37 +11,23 @@ struct GalleryView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    hero
-                    connectionBar
+            GeometryReader { proxy in
+                let isLandscape = proxy.size.width > proxy.size.height
 
-                    if store.isLoading {
-                        loadingState
-                    } else if store.years.isEmpty {
-                        emptyState
+                Group {
+                    if isLandscape {
+                        landscapeContent(size: proxy.size)
                     } else {
-                        HStack(alignment: .lastTextBaseline) {
-                            Text("Jahre")
-                                .font(.title2.bold())
-                            Spacer()
-                            Text("\(store.years.reduce(0) { $0 + $1.count }) Bilder")
-                                .font(.subheadline)
-                                .foregroundStyle(.secondary)
-                        }
-                        LazyVGrid(columns: columns, spacing: 14) {
-                            ForEach(store.years) { year in
-                                Button {
-                                    selectedYear = year
-                                } label: {
-                                    YearTile(year: year)
-                                }
-                                .buttonStyle(.plain)
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 20) {
+                                hero
+                                connectionBar
+                                yearContent
                             }
+                            .padding(16)
                         }
                     }
                 }
-                .padding(16)
             }
             .background(
                 LinearGradient(
@@ -71,7 +57,93 @@ struct GalleryView: View {
         }
     }
 
+    @ViewBuilder
+    private func landscapeContent(size: CGSize) -> some View {
+        let availableHeight = max(220, size.height - 32)
+        let headerSide = min(size.width * 0.42, availableHeight)
+        let tileSide = min(190, max(134, availableHeight * 0.48))
+        let rows = [
+            GridItem(.fixed(tileSide), spacing: 10)
+        ]
+
+        HStack(alignment: .top, spacing: 14) {
+            fixedHero(side: headerSide)
+
+            VStack(alignment: .leading, spacing: 10) {
+                connectionBar
+                yearHeader
+
+                if store.isLoading {
+                    loadingState
+                        .frame(maxWidth: .infinity, minHeight: headerSide)
+                } else if store.years.isEmpty {
+                    emptyState
+                        .frame(maxWidth: .infinity, minHeight: headerSide)
+                } else {
+                    ScrollView(.horizontal) {
+                        LazyHGrid(rows: rows, spacing: 10) {
+                            ForEach(store.years) { year in
+                                Button {
+                                    selectedYear = year
+                                } label: {
+                                    YearTile(year: year)
+                                        .frame(width: tileSide, height: tileSide)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .frame(height: tileSide)
+                        .padding(.trailing, 16)
+                    }
+                    .scrollIndicators(.visible)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .padding(16)
+    }
+
+    @ViewBuilder
+    private var yearContent: some View {
+        if store.isLoading {
+            loadingState
+        } else if store.years.isEmpty {
+            emptyState
+        } else {
+            yearHeader
+            LazyVGrid(columns: columns, spacing: 14) {
+                ForEach(store.years) { year in
+                    Button {
+                        selectedYear = year
+                    } label: {
+                        YearTile(year: year)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var yearHeader: some View {
+        HStack(alignment: .lastTextBaseline) {
+            Text("Jahre")
+                .font(.title2.bold())
+            Spacer()
+            Text("\(store.years.reduce(0) { $0 + $1.count }) Bilder")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+
     private var hero: some View {
+        GeometryReader { proxy in
+            let side = proxy.size.width
+            fixedHero(side: side)
+        }
+        .aspectRatio(1, contentMode: .fit)
+    }
+
+    private func fixedHero(side: CGFloat) -> some View {
         ZStack(alignment: .bottomLeading) {
             CachedRemoteImage(url: store.years.first?.cover?.thumbURL) { phase in
                 switch phase {
@@ -81,7 +153,7 @@ struct GalleryView: View {
                     LinearGradient(colors: [.teal, .indigo], startPoint: .topLeading, endPoint: .bottomTrailing)
                 }
             }
-            .frame(height: 210)
+            .frame(width: side, height: side)
             .clipped()
 
             LinearGradient(colors: [.black.opacity(0.05), .black.opacity(0.78)], startPoint: .top, endPoint: .bottom)
@@ -89,14 +161,19 @@ struct GalleryView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("PicCloud")
                     .font(.largeTitle.weight(.bold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
                 Text("Deine Bilder ueber Tailscale")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
             }
             .foregroundStyle(.white)
             .padding(18)
+            .frame(width: side, alignment: .leading)
         }
-        .frame(height: 210)
+        .frame(width: side, height: side)
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
