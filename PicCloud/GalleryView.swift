@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct GalleryView: View {
-    @StateObject private var store = GalleryStore()
+    @ObservedObject var store: GalleryStore
     @State private var selectedYear: GalleryYear?
 
     private let columns = [
@@ -52,7 +52,7 @@ struct GalleryView: View {
                 YearView(year: year, store: store)
             }
             .task {
-                await store.load()
+                await store.syncOnLaunch()
             }
         }
     }

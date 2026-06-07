@@ -3,6 +3,8 @@ import SwiftUI
 
 @main
 struct PicCloudApp: App {
+    @StateObject private var galleryStore = GalleryStore()
+
     init() {
         PicCloudCache.configure()
     }
@@ -10,7 +12,7 @@ struct PicCloudApp: App {
     var body: some Scene {
         WindowGroup {
             AuthenticationGate {
-                GalleryView()
+                GalleryView(store: galleryStore)
             }
         }
     }

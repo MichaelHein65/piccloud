@@ -19,6 +19,8 @@ full-screen viewer.
   current portrait or landscape viewport instead of decoding ultra-large originals on the phone.
 - Persistent iPhone cache using `URLCache`: JSON manifests, thumbnails, and viewed images can be
   reused after they have been loaded once.
+- Launch restore: if the Pi library version is unchanged, PicCloud restores the last gallery state
+  from the previous app session instead of rebuilding the visible folders from scratch.
 - Native iOS share sheet from the full-screen viewer.
 - Custom `In Bilder sichern` action for saving a shared image into the Photos library.
 
@@ -35,16 +37,28 @@ Requests use a cache-first policy. If a response was already cached, the app can
 without asking the server. This is intended for travel/mobile use when the phone is no longer on the
 same network.
 
-Folder and album manifests are different: PicCloud checks `/version.json` once per app session
-before opening lists. That response contains a small `libraryVersion` checksum derived from all
-image paths, sizes, and modification times. If the checksum still matches, the app trusts the iPhone
-cache for fast list loading. If it changes, the iPhone URL cache is invalidated so the app mirrors
-the Pi5 folder state instead of showing stale names or old album contents.
+Folder and album manifests are different: on launch, PicCloud first restores the last successful
+gallery snapshot from the previous app session. It then checks `/version.json` before trusting that
+snapshot. The response contains a small `libraryVersion` checksum derived from image paths, sizes,
+and modification times. If the checksum still matches, the app keeps the restored state and behaves
+as if the previous session had never ended. If it changes, the restored state and iPhone URL cache
+are invalidated so the app mirrors the Pi5 folder state instead of showing stale names or old album
+contents.
+
+Within one running app session, already opened year and album lists stay in an in-memory store, so
+re-entering the same folder does not require another manifest fetch.
 
 Image and thumbnail URLs include a file-version query value. When a photo is renamed, replaced, or
 modified on the Pi5, its URL changes and iOS stores a fresh cached copy under the new key.
 PicCloud also invalidates older cache schemas once after app updates and retries image loads from
 the server if a cached image response cannot be decoded.
+
+Visible thumbnails are cached twice on the phone:
+
+- as HTTP responses inside `URLCache`
+- as already decoded small images on disk for fast reuse after a full app restart
+
+This avoids paying the thumbnail decode cost again every time the app is launched.
 
 The full-screen viewer does not load `/image/...` originals directly. It uses `/thumb/{size}/...`,
 where `{size}` is derived from the current viewport and screen scale. Portrait and landscape can
