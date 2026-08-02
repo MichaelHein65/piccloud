@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 final class GalleryStore: ObservableObject {
-    @Published var serverURL: String = UserDefaults.standard.string(forKey: "PicCloud.serverURL") ?? "http://100.104.66.88:8098"
+    @Published var serverURL: String = GalleryStore.savedServerURL()
     @Published private(set) var years: [GalleryYear] = []
     @Published private(set) var albums: [GalleryAlbum] = []
     @Published private(set) var isLoading = false
@@ -70,6 +70,7 @@ final class GalleryStore: ObservableObject {
             rememberLibraryVersionIfNeeded(manifest.libraryVersion)
             years = manifest.years.filter { $0.albumCount > 0 }
             UserDefaults.standard.set(trimmedURL, forKey: "PicCloud.serverURL")
+            UserDefaults(suiteName: "group.de.michaelhein.piccloud")?.set(trimmedURL, forKey: "PicCloud.serverURL")
             serverURL = trimmedURL
             persistStateIfPossible()
         } catch {
@@ -184,6 +185,12 @@ final class GalleryStore: ObservableObject {
 
     private func normalizedServerURL() -> String {
         serverURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private static func savedServerURL() -> String {
+        UserDefaults.standard.string(forKey: "PicCloud.serverURL")
+            ?? UserDefaults(suiteName: "group.de.michaelhein.piccloud")?.string(forKey: "PicCloud.serverURL")
+            ?? "http://100.104.66.88:8098"
     }
 
     private func persistStateIfPossible() {

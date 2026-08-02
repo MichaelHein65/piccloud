@@ -1,8 +1,46 @@
 import LocalAuthentication
 import SwiftUI
+import UIKit
+
+final class PicCloudAppDelegate: NSObject, UIApplicationDelegate, URLSessionDelegate, URLSessionTaskDelegate {
+    private var backgroundCompletion: (() -> Void)?
+    private var backgroundSession: URLSession?
+
+    func application(
+        _ application: UIApplication,
+        handleEventsForBackgroundURLSession identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard identifier == "de.michaelhein.piccloud.share.upload" else {
+            completionHandler()
+            return
+        }
+        backgroundCompletion = completionHandler
+        let configuration = URLSessionConfiguration.background(withIdentifier: identifier)
+        configuration.sharedContainerIdentifier = "group.de.michaelhein.piccloud"
+        backgroundSession = URLSession(configuration: configuration, delegate: self, delegateQueue: nil)
+    }
+
+    func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        guard error == nil,
+              let response = task.response as? HTTPURLResponse,
+              (200...299).contains(response.statusCode),
+              let path = task.taskDescription else { return }
+        try? FileManager.default.removeItem(atPath: path)
+    }
+
+    func urlSessionDidFinishEvents(forBackgroundURLSession session: URLSession) {
+        DispatchQueue.main.async {
+            self.backgroundCompletion?()
+            self.backgroundCompletion = nil
+            self.backgroundSession = nil
+        }
+    }
+}
 
 @main
 struct PicCloudApp: App {
+    @UIApplicationDelegateAdaptor(PicCloudAppDelegate.self) private var appDelegate
     @StateObject private var galleryStore = GalleryStore()
 
     init() {
