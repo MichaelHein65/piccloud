@@ -1,26 +1,26 @@
 import Foundation
 
-struct LibraryVersionResponse: Decodable {
+struct LibraryVersionResponse: Codable {
     let generatedAt: Date
     let libraryVersion: String
     let rootName: String
 }
 
-struct GalleryManifest: Decodable {
+struct GalleryManifest: Codable {
     let generatedAt: Date
     let libraryVersion: String?
     let rootName: String
     let albums: [GalleryAlbum]
 }
 
-struct YearManifest: Decodable {
+struct YearManifest: Codable {
     let generatedAt: Date
     let libraryVersion: String?
     let rootName: String
     let years: [GalleryYear]
 }
 
-struct YearResponse: Decodable {
+struct YearResponse: Codable {
     let generatedAt: Date
     let libraryVersion: String?
     let rootName: String
@@ -28,14 +28,14 @@ struct YearResponse: Decodable {
     let albums: [GalleryAlbum]
 }
 
-struct AlbumResponse: Decodable {
+struct AlbumResponse: Codable {
     let generatedAt: Date
     let libraryVersion: String?
     let rootName: String
     let album: GalleryAlbum
 }
 
-struct GalleryYear: Decodable, Identifiable, Hashable {
+struct GalleryYear: Codable, Identifiable, Hashable {
     let id: String
     let title: String
     let count: Int
@@ -43,7 +43,7 @@ struct GalleryYear: Decodable, Identifiable, Hashable {
     let cover: GalleryPhoto?
 }
 
-struct GalleryAlbum: Decodable, Identifiable, Hashable {
+struct GalleryAlbum: Codable, Identifiable, Hashable {
     let id: String
     let title: String
     let path: String
@@ -78,9 +78,19 @@ struct GalleryAlbum: Decodable, Identifiable, Hashable {
         cover = try container.decodeIfPresent(GalleryPhoto.self, forKey: .cover)
         photos = try container.decodeIfPresent([GalleryPhoto].self, forKey: .photos) ?? []
     }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encode(title, forKey: .title)
+        try container.encode(path, forKey: .path)
+        try container.encode(count, forKey: .count)
+        try container.encodeIfPresent(cover, forKey: .cover)
+        try container.encode(photos, forKey: .photos)
+    }
 }
 
-struct GalleryPhoto: Decodable, Identifiable, Hashable {
+struct GalleryPhoto: Codable, Identifiable, Hashable {
     let id: String
     let albumId: String
     let name: String

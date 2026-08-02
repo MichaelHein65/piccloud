@@ -1,9 +1,11 @@
 import SwiftUI
 import ImageIO
+import CryptoKit
 
 enum PicCloudCache {
     private static let schemaVersion = 2
     private static let schemaVersionKey = "PicCloud.cacheSchemaVersion"
+    private static let decodedImageCache = NSCache<NSString, UIImage>()
 
     static func configure() {
         URLCache.shared = URLCache(
@@ -11,6 +13,7 @@ enum PicCloudCache {
             diskCapacity: 4 * 1024 * 1024 * 1024,
             directory: cacheDirectory
         )
+        ensureThumbnailCacheDirectory()
         invalidateIfSchemaChanged()
     }
 
@@ -32,6 +35,8 @@ enum PicCloudCache {
 
     static func invalidateAll() {
         URLCache.shared.removeAllCachedResponses()
+        decodedImageCache.removeAllObjects()
+        clearThumbnailCache()
     }
 
     static func prefetch(_ url: URL, timeout: TimeInterval = 60) async {
@@ -51,6 +56,24 @@ enum PicCloudCache {
             "PicCloudURLCache",
             isDirectory: true
         )
+    }
+
+    private static var thumbnailCacheDirectory: URL? {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first?.appendingPathComponent(
+            "PicCloudThumbnailCache",
+            isDirectory: true
+        )
+    }
+
+    private static func ensureThumbnailCacheDirectory() {
+        guard let thumbnailCacheDirectory else { return }
+        try? FileManager.default.createDirectory(at: thumbnailCacheDirectory, withIntermediateDirectories: true)
+    }
+
+    private static func clearThumbnailCache() {
+        guard let thumbnailCacheDirectory else { return }
+        try? FileManager.default.removeItem(at: thumbnailCacheDirectory)
+        ensureThumbnailCacheDirectory()
     }
 }
 
@@ -81,6 +104,11 @@ struct CachedRemoteImage<Content: View>: View {
             return
         }
 
+        if let cachedImage = PicCloudCache.cachedImage(for: url, maxPixelSize: 1024) {
+            phase = .success(Image(uiImage: cachedImage))
+            return
+        }
+
         phase = .empty
         let task = Task {
             do {
@@ -101,7 +129,27 @@ struct CachedRemoteImage<Content: View>: View {
 }
 
 extension PicCloudCache {
+    static func cachedImage(for url: URL, maxPixelSize: CGFloat) -> UIImage? {
+        let key = cacheKey(for: url, maxPixelSize: maxPixelSize)
+        if let image = decodedImageCache.object(forKey: key) {
+            return image
+        }
+
+        guard let diskURL = cachedImageURL(for: url, maxPixelSize: maxPixelSize),
+              let data = try? Data(contentsOf: diskURL),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+
+        decodedImageCache.setObject(image, forKey: key)
+        return image
+    }
+
     static func loadDownsampledImage(from url: URL, maxPixelSize: CGFloat) async throws -> UIImage {
+        if let cachedImage = cachedImage(for: url, maxPixelSize: maxPixelSize) {
+            return cachedImage
+        }
+
         do {
             return try await loadDownsampledImage(from: url, maxPixelSize: maxPixelSize, cachePolicy: .returnCacheDataElseLoad)
         } catch {
@@ -125,7 +173,31 @@ extension PicCloudCache {
         guard let image = downsampledImage(from: data, maxPixelSize: maxPixelSize) else {
             throw URLError(.cannotDecodeContentData)
         }
+        cacheImage(image, for: url, maxPixelSize: maxPixelSize)
         return image
+    }
+
+    private static func cacheKey(for url: URL, maxPixelSize: CGFloat) -> NSString {
+        "\(url.absoluteString)|\(Int(maxPixelSize.rounded()))" as NSString
+    }
+
+    private static func cachedImageURL(for url: URL, maxPixelSize: CGFloat) -> URL? {
+        guard let thumbnailCacheDirectory else { return nil }
+        let digest = SHA256.hash(data: Data("\(url.absoluteString)|\(Int(maxPixelSize.rounded()))".utf8))
+        let filename = digest.map { String(format: "%02x", $0) }.joined() + ".jpg"
+        return thumbnailCacheDirectory.appendingPathComponent(filename, isDirectory: false)
+    }
+
+    private static func cacheImage(_ image: UIImage, for url: URL, maxPixelSize: CGFloat) {
+        let key = cacheKey(for: url, maxPixelSize: maxPixelSize)
+        decodedImageCache.setObject(image, forKey: key)
+
+        guard let diskURL = cachedImageURL(for: url, maxPixelSize: maxPixelSize),
+              let data = image.jpegData(compressionQuality: 0.82) ?? image.pngData() else {
+            return
+        }
+
+        try? data.write(to: diskURL, options: .atomic)
     }
 
     static func downsampledImage(from data: Data, maxPixelSize: CGFloat) -> UIImage? {

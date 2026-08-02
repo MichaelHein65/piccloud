@@ -9,6 +9,10 @@ import mimetypes
 import pathlib
 import posixpath
 import re
+import secrets
+import shutil
+import threading
+import time
 import urllib.parse
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
@@ -26,6 +30,7 @@ else:
     register_heif_opener()
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".heic", ".heif", ".webp", ".tif", ".tiff"}
+MOVIE_EXTENSIONS = {".mov", ".mp4", ".m4v"}
 IGNORED_IMAGE_DIR_NAMES = {"raw", "filme", "movies", "videos", "video"}
 YEAR_PATTERN = re.compile(r"^(19|20)\d{2}$")
 EVENT_PATTERN = re.compile(r"^(19|20)\d{2}[-_. ]?\d{1,2}[-_. ]?\d{1,2}\b")
@@ -137,6 +142,22 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
     thumb_root: pathlib.Path
     thumb_size: int
     jpeg_quality: int
+    upload_sessions: dict[str, dict] = {}
+    upload_lock = threading.Lock()
+
+    def do_POST(self) -> None:
+        if urllib.parse.urlparse(self.path).path == "/upload/session":
+            self.create_upload_session()
+            return
+        self.send_error(404)
+
+    def do_PUT(self) -> None:
+        path = urllib.parse.urlparse(self.path).path
+        match = re.fullmatch(r"/upload/([A-Za-z0-9_-]+)/([0-9]+)", path)
+        if not match:
+            self.send_error(404)
+            return
+        self.receive_upload(match.group(1), int(match.group(2)))
 
     def end_headers(self) -> None:
         self.send_header("Access-Control-Allow-Origin", "*")
@@ -184,6 +205,183 @@ class PicCloudHandler(SimpleHTTPRequestHandler):
         self._sent_cache_control = True
         self.end_headers()
         self.wfile.write(data)
+
+    def read_json_body(self, maximum: int = 1_000_000) -> dict | None:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self.send_error(400, "Invalid Content-Length")
+            return None
+        if length <= 0 or length > maximum:
+            self.send_error(413, "Invalid request size")
+            return None
+        try:
+            value = json.loads(self.rfile.read(length))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self.send_error(400, "Invalid JSON")
+            return None
+        if not isinstance(value, dict):
+            self.send_error(400, "Expected a JSON object")
+            return None
+        return value
+
+    @staticmethod
+    def safe_component(value: object, fallback: str) -> str:
+        text = re.sub(r"[\\/\0\r\n:]", "-", str(value or ""))
+        text = re.sub(r"\s+", " ", text).strip(" .")
+        return text[:120] or fallback
+
+    def create_upload_session(self) -> None:
+        request = self.read_json_body()
+        if request is None:
+            return
+        folder_name = self.safe_component(request.get("folderName"), "")
+        files = request.get("files")
+        if not re.fullmatch(r"(19|20)\d{6} .+", folder_name) or not isinstance(files, list) or not 1 <= len(files) <= 500:
+            self.send_error(400, "Invalid folder name or file list")
+            return
+        year = folder_name[:4]
+        final_event_dir = self.gallery_root / year / folder_name
+        if final_event_dir.exists():
+            self.send_error(409, "Der Ordner existiert bereits")
+            return
+
+        session_id = secrets.token_urlsafe(24)
+        upload_root = self.gallery_root / ".piccloud-uploads"
+        staging_event_dir = upload_root / session_id / year / folder_name
+
+        planned = []
+        used: dict[pathlib.Path, set[str]] = {}
+        for index, item in enumerate(files):
+            if not isinstance(item, dict):
+                self.send_error(400, "Invalid file metadata")
+                return
+            original = pathlib.Path(str(item.get("originalName", "upload"))).name
+            extension = pathlib.Path(original).suffix.lower()
+            media_kind = item.get("mediaKind")
+            if media_kind == "movie" and extension in MOVIE_EXTENSIONS:
+                subfolder = "Filme"
+            elif extension in {".heic", ".heif"}:
+                subfolder = "RAW"
+            elif media_kind == "image" and extension in IMAGE_EXTENSIONS:
+                subfolder = "JPG"
+            else:
+                self.send_error(400, f"Unsupported file: {original}")
+                return
+            timestamp = str(item.get("timestamp", ""))
+            if not re.fullmatch(r"(19|20)\d{6} \d{2}-\d{2}", timestamp):
+                self.send_error(400, "Invalid timestamp")
+                return
+            place = self.safe_component(item.get("place"), "Unbekannter Ort")
+            target_dir = staging_event_dir / subfolder
+            names = used.setdefault(target_dir, set())
+            stem = f"{timestamp} {place}"
+            candidate = f"{stem}{extension}"
+            duplicate = 2
+            jpg_names = used.setdefault(staging_event_dir / "JPG", set())
+            def jpg_twin_name(name: str) -> str:
+                return f"{pathlib.Path(name).stem}.jpg"
+            while candidate.casefold() in names or (extension in {".heic", ".heif"} and jpg_twin_name(candidate).casefold() in jpg_names):
+                candidate = f"{stem} ({duplicate}){extension}"
+                duplicate += 1
+            names.add(candidate.casefold())
+            jpg_target = None
+            if extension in {".heic", ".heif"}:
+                jpg_name = jpg_twin_name(candidate)
+                jpg_names.add(jpg_name.casefold())
+                jpg_target = staging_event_dir / "JPG" / jpg_name
+            planned.append({"index": index, "relativePath": f"{year}/{folder_name}/{subfolder}/{candidate}", "target": target_dir / candidate, "jpgTarget": jpg_target})
+
+        with self.upload_lock:
+            cutoff = time.time() - 24 * 60 * 60
+            self.upload_sessions = {key: value for key, value in self.upload_sessions.items() if value["created"] >= cutoff}
+            type(self).upload_sessions = self.upload_sessions
+            if any(value["folder"] == f"{year}/{folder_name}" for value in self.upload_sessions.values()):
+                self.send_error(409, "Für diesen Ordner läuft bereits ein Upload")
+                return
+            try:
+                upload_root.mkdir(parents=True, exist_ok=True)
+                for old_session in upload_root.iterdir():
+                    if old_session.is_dir() and old_session.stat().st_mtime < cutoff:
+                        shutil.rmtree(old_session, ignore_errors=True)
+                for subfolder in ("JPG", "RAW", "Filme", "Ergebnis"):
+                    (staging_event_dir / subfolder).mkdir(parents=True, exist_ok=True)
+            except OSError as error:
+                self.send_error(500, str(error))
+                return
+            self.upload_sessions[session_id] = {
+                "created": time.time(),
+                "files": planned,
+                "uploaded": set(),
+                "folder": f"{year}/{folder_name}",
+                "stagingEvent": staging_event_dir,
+                "finalEvent": final_event_dir,
+            }
+        self.write_json({"sessionId": session_id, "folder": f"{year}/{folder_name}", "files": [{"index": item["index"], "relativePath": item["relativePath"]} for item in planned]})
+
+    def receive_upload(self, session_id: str, index: int) -> None:
+        with self.upload_lock:
+            session = self.upload_sessions.get(session_id)
+        if session is None or not 0 <= index < len(session["files"]):
+            self.send_error(404, "Unknown upload")
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = 0
+        if length <= 0 or length > 20 * 1024 * 1024 * 1024:
+            self.send_error(413, "Invalid file size")
+            return
+        target = session["files"][index]["target"]
+        temporary = target.with_name(f".{target.name}.{session_id}.uploading")
+        try:
+            remaining = length
+            with temporary.open("xb") as output:
+                while remaining:
+                    chunk = self.rfile.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise OSError("Upload ended early")
+                    output.write(chunk)
+                    remaining -= len(chunk)
+            temporary.replace(target)
+            jpg_target = session["files"][index].get("jpgTarget")
+            if jpg_target is not None:
+                if Image is None or ImageOps is None:
+                    raise OSError("HEIC-Konvertierung ist auf dem Server nicht verfügbar")
+                jpg_temporary = jpg_target.with_name(f".{jpg_target.name}.{session_id}.uploading")
+                with Image.open(target) as image:
+                    image = ImageOps.exif_transpose(image)
+                    if image.mode not in ("RGB", "L"):
+                        image = image.convert("RGB")
+                    image.save(jpg_temporary, "JPEG", quality=92, optimize=True)
+                jpg_temporary.replace(jpg_target)
+            with self.upload_lock:
+                session["uploaded"].add(index)
+                complete = len(session["uploaded"]) == len(session["files"])
+            if complete:
+                final_event = session["finalEvent"]
+                final_event.parent.mkdir(parents=True, exist_ok=True)
+                if final_event.exists():
+                    raise OSError("Der Zielordner wurde während des Uploads bereits angelegt")
+                session["stagingEvent"].replace(final_event)
+                try:
+                    year_staging_dir = session["stagingEvent"].parent
+                    session_staging_dir = year_staging_dir.parent
+                    year_staging_dir.rmdir()
+                    session_staging_dir.rmdir()
+                except OSError:
+                    pass
+                with self.upload_lock:
+                    self.upload_sessions.pop(session_id, None)
+            self.write_json({"relativePath": session["files"][index]["relativePath"], "complete": complete})
+        except FileExistsError:
+            self.send_error(409, "Upload already in progress")
+        except OSError as error:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            self.send_error(500, str(error))
 
     def write_version(self) -> None:
         payload = {

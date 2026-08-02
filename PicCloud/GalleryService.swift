@@ -2,16 +2,18 @@ import Foundation
 
 @MainActor
 final class GalleryStore: ObservableObject {
-    @Published var serverURL: String = UserDefaults.standard.string(forKey: "PicCloud.serverURL") ?? "http://100.104.66.88:8098"
+    @Published var serverURL: String = GalleryStore.savedServerURL()
     @Published private(set) var years: [GalleryYear] = []
     @Published private(set) var albums: [GalleryAlbum] = []
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
 
     private let libraryVersionKey = "PicCloud.libraryVersion"
-    private var hasCheckedLibraryVersion = false
     private var serverSupportsLibraryVersion = true
     private var checkedManifestURLs: Set<URL> = []
+    private var cachedYearAlbums: [String: [GalleryAlbum]] = [:]
+    private var cachedAlbumDetails: [String: GalleryAlbum] = [:]
+    private var activeBaseURL: String?
 
     private let decoder: JSONDecoder = {
         let decoder = JSONDecoder()
@@ -19,12 +21,43 @@ final class GalleryStore: ObservableObject {
         return decoder
     }()
 
+    private let encoder: JSONEncoder = {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        return encoder
+    }()
+
+    init() {
+        restorePersistedState()
+    }
+
+    func syncOnLaunch() async {
+        let trimmedURL = normalizedServerURL()
+        guard URL(string: "\(trimmedURL)/version.json") != nil else { return }
+        resetSessionCachesIfBaseURLChanged(trimmedURL)
+
+        if years.isEmpty {
+            await load()
+            return
+        }
+
+        do {
+            try await refreshLibraryVersionIfNeeded(baseURL: trimmedURL)
+            if years.isEmpty {
+                await load()
+            }
+        } catch {
+            // Keep restored state for offline/slow-start behavior.
+        }
+    }
+
     func load() async {
-        let trimmedURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let trimmedURL = normalizedServerURL()
         guard let url = URL(string: "\(trimmedURL)/years.json") else {
             errorMessage = "Ungueltige Server-Adresse"
             return
         }
+        resetSessionCachesIfBaseURLChanged(trimmedURL)
 
         isLoading = true
         errorMessage = nil
@@ -37,14 +70,20 @@ final class GalleryStore: ObservableObject {
             rememberLibraryVersionIfNeeded(manifest.libraryVersion)
             years = manifest.years.filter { $0.albumCount > 0 }
             UserDefaults.standard.set(trimmedURL, forKey: "PicCloud.serverURL")
+            UserDefaults(suiteName: "group.de.michaelhein.piccloud")?.set(trimmedURL, forKey: "PicCloud.serverURL")
             serverURL = trimmedURL
+            persistStateIfPossible()
         } catch {
             errorMessage = "Keine Verbindung zur Galerie: \(error.localizedDescription)"
         }
     }
 
     func loadYear(_ year: GalleryYear) async throws -> [GalleryAlbum] {
-        let trimmedURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let trimmedURL = normalizedServerURL()
+        resetSessionCachesIfBaseURLChanged(trimmedURL)
+        if let cachedAlbums = cachedYearAlbums[year.id] {
+            return cachedAlbums
+        }
         guard let encodedYear = year.id.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed),
               let url = URL(string: "\(trimmedURL)/year/\(encodedYear).json") else {
             throw URLError(.badURL)
@@ -53,11 +92,17 @@ final class GalleryStore: ObservableObject {
         let data = try await loadManifestData(from: url)
         let yearResponse = try decoder.decode(YearResponse.self, from: data)
         rememberLibraryVersionIfNeeded(yearResponse.libraryVersion)
+        cachedYearAlbums[year.id] = yearResponse.albums
+        persistStateIfPossible()
         return yearResponse.albums
     }
 
     func loadAlbum(_ album: GalleryAlbum) async throws -> GalleryAlbum {
-        let trimmedURL = serverURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let trimmedURL = normalizedServerURL()
+        resetSessionCachesIfBaseURLChanged(trimmedURL)
+        if let cachedAlbum = cachedAlbumDetails[album.id] {
+            return cachedAlbum
+        }
         guard let url = URL(string: "\(trimmedURL)/album/\(album.id).json") else {
             throw URLError(.badURL)
         }
@@ -65,6 +110,8 @@ final class GalleryStore: ObservableObject {
         let data = try await loadManifestData(from: url)
         let albumResponse = try decoder.decode(AlbumResponse.self, from: data)
         rememberLibraryVersionIfNeeded(albumResponse.libraryVersion)
+        cachedAlbumDetails[album.id] = albumResponse.album
+        persistStateIfPossible()
         return albumResponse.album
     }
 
@@ -83,7 +130,6 @@ final class GalleryStore: ObservableObject {
     }
 
     private func refreshLibraryVersionIfNeeded(baseURL: String) async throws {
-        guard !hasCheckedLibraryVersion else { return }
         guard let url = URL(string: "\(baseURL)/version.json") else {
             throw URLError(.badURL)
         }
@@ -93,7 +139,6 @@ final class GalleryStore: ObservableObject {
         if let httpResponse = response as? HTTPURLResponse, !(200...299).contains(httpResponse.statusCode) {
             if httpResponse.statusCode == 404 {
                 serverSupportsLibraryVersion = false
-                hasCheckedLibraryVersion = true
                 return
             }
             throw URLError(.badServerResponse)
@@ -101,7 +146,6 @@ final class GalleryStore: ObservableObject {
 
         let versionResponse = try decoder.decode(LibraryVersionResponse.self, from: data)
         invalidateCacheIfNeeded(libraryVersion: versionResponse.libraryVersion)
-        hasCheckedLibraryVersion = true
     }
 
     private func rememberLibraryVersionIfNeeded(_ libraryVersion: String?) {
@@ -121,8 +165,84 @@ final class GalleryStore: ObservableObject {
 
         PicCloudCache.invalidateAll()
         checkedManifestURLs.removeAll()
+        cachedYearAlbums.removeAll()
+        cachedAlbumDetails.removeAll()
         years = []
         albums = []
         defaults.set(libraryVersion, forKey: libraryVersionKey)
+        removePersistedState()
     }
+
+    private func resetSessionCachesIfBaseURLChanged(_ baseURL: String) {
+        guard activeBaseURL != baseURL else { return }
+        activeBaseURL = baseURL
+        checkedManifestURLs.removeAll()
+        cachedYearAlbums.removeAll()
+        cachedAlbumDetails.removeAll()
+        years = []
+        albums = []
+    }
+
+    private func normalizedServerURL() -> String {
+        serverURL.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private static func savedServerURL() -> String {
+        UserDefaults.standard.string(forKey: "PicCloud.serverURL")
+            ?? UserDefaults(suiteName: "group.de.michaelhein.piccloud")?.string(forKey: "PicCloud.serverURL")
+            ?? "http://100.104.66.88:8098"
+    }
+
+    private func persistStateIfPossible() {
+        let defaults = UserDefaults.standard
+        guard let libraryVersion = defaults.string(forKey: libraryVersionKey),
+              !libraryVersion.isEmpty,
+              let data = try? encoder.encode(
+                PersistedGalleryState(
+                    serverURL: normalizedServerURL(),
+                    libraryVersion: libraryVersion,
+                    years: years,
+                    cachedYearAlbums: cachedYearAlbums,
+                    cachedAlbumDetails: cachedAlbumDetails
+                )
+              ) else {
+            return
+        }
+
+        try? data.write(to: persistedStateURL, options: .atomic)
+    }
+
+    private func restorePersistedState() {
+        guard let data = try? Data(contentsOf: persistedStateURL),
+              let state = try? decoder.decode(PersistedGalleryState.self, from: data) else {
+            return
+        }
+
+        let trimmedURL = normalizedServerURL()
+        guard state.serverURL == trimmedURL else { return }
+
+        activeBaseURL = state.serverURL
+        years = state.years
+        cachedYearAlbums = state.cachedYearAlbums
+        cachedAlbumDetails = state.cachedAlbumDetails
+        UserDefaults.standard.set(state.libraryVersion, forKey: libraryVersionKey)
+    }
+
+    private func removePersistedState() {
+        try? FileManager.default.removeItem(at: persistedStateURL)
+    }
+
+    private var persistedStateURL: URL {
+        let cacheDirectory = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+        return (cacheDirectory ?? URL(fileURLWithPath: NSTemporaryDirectory()))
+            .appendingPathComponent("PicCloudGalleryState.json", isDirectory: false)
+    }
+}
+
+private struct PersistedGalleryState: Codable {
+    let serverURL: String
+    let libraryVersion: String
+    let years: [GalleryYear]
+    let cachedYearAlbums: [String: [GalleryAlbum]]
+    let cachedAlbumDetails: [String: GalleryAlbum]
 }
